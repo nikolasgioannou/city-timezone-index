@@ -1,0 +1,3 @@
+venv/
+.DS_Store
+cities100000_with_country.json
