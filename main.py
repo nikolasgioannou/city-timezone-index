@@ -4,6 +4,7 @@ import uuid
 
 CITIES_INPUT = "./cities15000.txt"
 COUNTRIES_INPUT = "./countries.json"
+TIMEZONE_ALIASES_INPUT = "./timezone_search_aliases.json"
 OUTPUT_PATH = "./cities100000_with_country.json"
 
 
@@ -19,6 +20,19 @@ def ascii_fold(text: str) -> str:
     )
 
 
+def dedupe_preserve_order(items):
+    """
+    Deduplicate a list while preserving first occurrence order.
+    """
+    seen = set()
+    result = []
+    for item in items:
+        if item and item not in seen:
+            seen.add(item)
+            result.append(item)
+    return result
+
+
 # --- Load country lookup ---
 with open(COUNTRIES_INPUT, "r", encoding="utf-8") as f:
     countries = json.load(f)
@@ -28,6 +42,11 @@ country_lookup = {
     for c in countries
     if "abbreviation" in c and "country" in c
 }
+
+
+# --- Load timezone search aliases ---
+with open(TIMEZONE_ALIASES_INPUT, "r", encoding="utf-8") as f:
+    TIMEZONE_SEARCH_ALIASES = json.load(f)
 
 
 results = []
@@ -54,21 +73,35 @@ with open(CITIES_INPUT, "r", encoding="utf-8") as infile:
         if population <= 100_000 and feature_code != "PPLC":
             continue
 
-        country_name = country_lookup.get(country_code, "")
+        country_name = country_lookup.get(country_code)
         if not country_name:
             continue
 
-        # --- Build search string ---
         folded = ascii_fold(name)
 
-        search_tokens = {
-            name.lower(),
-            folded.lower(),
-            country_name.lower(),
-        }
+        # ------------------------------------------------------------------
+        # Build ordered search tokens (priority matters!)
+        # ------------------------------------------------------------------
 
-        search_tokens = {t for t in search_tokens if t}
-        search = " ".join(sorted(search_tokens))
+        search_parts = []
+
+        # 1️⃣ Timezone aliases (highest intent: EDT, EST, Eastern Time, etc.)
+        tz_aliases = TIMEZONE_SEARCH_ALIASES.get(timezone, [])
+        for alias in tz_aliases:
+            search_parts.append(alias.lower())
+
+        # 2️⃣ City name (exact + ASCII-folded)
+        search_parts.append(name.lower())
+        if folded.lower() != name.lower():
+            search_parts.append(folded.lower())
+
+        # 3️⃣ Country name (lowest intent)
+        search_parts.append(country_name.lower())
+
+        # Deduplicate while preserving order
+        search_parts = dedupe_preserve_order(search_parts)
+
+        search = " ".join(search_parts)
 
         results.append({
             "id": str(uuid.uuid4()),
