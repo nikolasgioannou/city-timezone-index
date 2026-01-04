@@ -1,11 +1,16 @@
 import json
 import unicodedata
 import uuid
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 CITIES_INPUT = "./cities15000.txt"
 COUNTRIES_INPUT = "./countries.json"
 TIMEZONE_ALIASES_INPUT = "./timezone_search_aliases.json"
 OUTPUT_PATH = "./cities100000_with_country.json"
+
+# Use a fixed reference date for deterministic offsets
+REFERENCE_DATE = datetime(2024, 1, 1, tzinfo=timezone.utc)
 
 
 def ascii_fold(text: str) -> str:
@@ -31,6 +36,19 @@ def dedupe_preserve_order(items):
             seen.add(item)
             result.append(item)
     return result
+
+
+def get_utc_offset_minutes(tz_name: str) -> int:
+    """
+    Return UTC offset in minutes for a timezone at REFERENCE_DATE.
+    """
+    try:
+        tz = ZoneInfo(tz_name)
+        offset = tz.utcoffset(REFERENCE_DATE)
+        return int(offset.total_seconds() // 60)
+    except Exception:
+        # Extremely defensive fallback
+        return 0
 
 
 # --- Load country lookup ---
@@ -62,7 +80,7 @@ with open(CITIES_INPUT, "r", encoding="utf-8") as infile:
         name = parts[1]
         feature_code = parts[7]
         country_code = parts[8]
-        timezone = parts[17]
+        timezone_name = parts[17]
 
         try:
             population = int(parts[14])
@@ -80,36 +98,52 @@ with open(CITIES_INPUT, "r", encoding="utf-8") as infile:
         folded = ascii_fold(name)
 
         # ------------------------------------------------------------------
-        # Build ordered search tokens (priority matters!)
+        # Build tagged, priority-encoded search string
         # ------------------------------------------------------------------
 
         search_parts = []
 
-        # 1️⃣ Timezone aliases (highest intent: EDT, EST, Eastern Time, etc.)
-        tz_aliases = TIMEZONE_SEARCH_ALIASES.get(timezone, [])
+        # 1️⃣ Timezone aliases (highest intent)
+        tz_aliases = TIMEZONE_SEARCH_ALIASES.get(timezone_name, [])
         for alias in tz_aliases:
-            search_parts.append(alias.lower())
+            search_parts.append(f"tz:{alias.lower()}")
 
         # 2️⃣ City name (exact + ASCII-folded)
-        search_parts.append(name.lower())
+        search_parts.append(f"city:{name.lower()}")
         if folded.lower() != name.lower():
-            search_parts.append(folded.lower())
+            search_parts.append(f"city:{folded.lower()}")
 
         # 3️⃣ Country name (lowest intent)
-        search_parts.append(country_name.lower())
+        search_parts.append(f"country:{country_name.lower()}")
 
-        # Deduplicate while preserving order
         search_parts = dedupe_preserve_order(search_parts)
-
         search = " ".join(search_parts)
+
+        # Compute numeric UTC offset (minutes)
+        offset_minutes = get_utc_offset_minutes(timezone_name)
 
         results.append({
             "id": str(uuid.uuid4()),
             "city": name,
             "country": country_name,
-            "timezone": timezone,
+            "timezone": timezone_name,
             "search": search,
+            "_offset": offset_minutes,  # temporary field for sorting
         })
+
+
+# ------------------------------------------------------------------
+# Sort:
+# 1) Farthest back GMT-x first (most negative offset)
+# 2) Alphabetical by city name within same offset
+# ------------------------------------------------------------------
+results.sort(
+    key=lambda r: (r["_offset"], r["city"].lower())
+)
+
+# Remove temporary sort key
+for r in results:
+    del r["_offset"]
 
 
 # --- Write final output ---
